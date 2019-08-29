@@ -1,3 +1,18 @@
+# -*- coding: utf-8 -*-
+
+'''
+@Author  :   Xu
+
+@Software:   PyCharm
+
+@File    :   modeling.py
+
+@Time    :   2019-08-28 18:02
+
+@Desc    :   xlnet 的modeling代码解析
+
+'''
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
