@@ -4,8 +4,11 @@ from __future__ import print_function
 
 import json
 import os
+import sys
+sys.path.append("./xlnet")
+
 import tensorflow as tf
-import modeling
+from xlnet import modeling
 
 
 def _get_initializer(FLAGS):
@@ -207,7 +210,7 @@ class XLNetModel(object):
         same_length=run_config.same_length
     )
 
-    input_args = dict(
+    input_args = dict(          # 输入参数
         inp_k=input_ids,
         seg_id=seg_ids,
         input_mask=input_mask,

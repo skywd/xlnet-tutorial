@@ -14,16 +14,16 @@ import json
 import six
 import random
 import gc
+import sys
+sys.path.append('./xlnet')
 
 import numpy as np
 
-if six.PY2:
-  import cPickle as pickle
-else:
-  import pickle
+import pickle
 
 import tensorflow as tf
 import sentencepiece as spm
+import tokenization
 from prepro_utils import preprocess_text, encode_ids, encode_pieces, printable_text
 import function_builder
 import model_utils
@@ -58,6 +58,7 @@ flags.DEFINE_string("summary_type", default="last",
       help="Method used to summarize a sequence into a vector.")
 flags.DEFINE_bool("use_bfloat16", default=False,
       help="Whether to use bfloat16.")
+
 
 # Parameter initialization
 flags.DEFINE_enum("init", default="normal",
@@ -153,6 +154,9 @@ flags.DEFINE_integer("start_n_top", default=5, help="Beam size for span start.")
 flags.DEFINE_integer("end_n_top", default=5, help="Beam size for span end.")
 flags.DEFINE_string("target_eval_key", default="best_f1",
                     help="Use has_ans_f1 for Model I.")
+
+# 自己添加的词表
+flags.DEFINE_string("vocab_file", "vocab.txt", help="Input file")
 
 
 FLAGS = flags.FLAGS
@@ -447,8 +451,6 @@ def convert_examples_to_features(examples, sp_model, max_seq_length,
       assert tok_start_position <= tok_end_position
 
     def _piece_to_id(x):
-      if six.PY2 and isinstance(x, unicode):
-        x = x.encode('utf-8')
       return sp_model.PieceToId(x)
 
     all_doc_tokens = list(map(_piece_to_id, para_tokens))
@@ -1169,8 +1171,10 @@ def main(_):
   if FLAGS.do_predict and not tf.gfile.Exists(FLAGS.predict_dir):
     tf.gfile.MakeDirs(FLAGS.predict_dir)
 
-  sp_model = spm.SentencePieceProcessor()
-  sp_model.Load(FLAGS.spiece_model_file)
+  # sp_model = spm.SentencePieceProcessor()
+  # sp_model.Load(FLAGS.spiece_model_file)
+
+  sp_model = tokenization.FullTokenizer(vocab = FLAGS.vocab_file)
 
   ### TPU Configuration
   run_config = model_utils.configure_tpu(FLAGS)

@@ -19,6 +19,8 @@ from __future__ import print_function
 import json
 import os
 import random
+import sys
+sys.path.append("./xlnet")
 
 from absl import flags
 import absl.logging as _logging  # pylint: disable=unused-import
@@ -27,10 +29,10 @@ import numpy as np
 
 
 import tensorflow as tf
+import tokenization       # bert 的
 
-from xlnet.prepro_utils import preprocess_text, encode_ids
-import sentencepiece as spm
-
+from prepro_utils import preprocess_text, encode_ids
+import sentencepiece as spm             # 分词工具，在这里将他改成基于字的
 
 special_symbols = {
     "<unk>"  : 0,
@@ -45,6 +47,7 @@ special_symbols = {
 }
 
 VOCAB_SIZE = 32000
+
 UNK_ID = special_symbols["<unk>"]
 CLS_ID = special_symbols["<cls>"]
 SEP_ID = special_symbols["<sep>"]
@@ -89,98 +92,106 @@ def format_filename(prefix, bsz_per_host, seq_len, bi_data, suffix,
 
 
 def _create_data(idx, input_paths):
-  # Load sentence-piece model
-  sp = spm.SentencePieceProcessor()
-  sp.Load(FLAGS.sp_path)
+    '''
+    # Load sentence-piece model
+    :param idx:
+    :param input_paths:
+    :return:
+    '''
 
-  input_shards = []
-  total_line_cnt = 0
-  for input_path in input_paths:
-    input_data, sent_ids = [], []
-    sent_id, line_cnt = True, 0
-    tf.logging.info("Processing %s", input_path)
-    for line in tf.gfile.Open(input_path):
-      if line_cnt % 100000 == 0:
-        tf.logging.info("Loading line %d", line_cnt)
-      line_cnt += 1
+    # sp = spm.SentencePieceProcessor()
+    # sp.Load(FLAGS.sp_path)
 
-      if not line.strip():
-        if FLAGS.use_eod:
+    sp = tokenization.FullTokenizer(vocab_file=FLAGS.vocab_file)
+
+    input_shards = []
+    total_line_cnt = 0
+    for input_path in input_paths:
+        input_data, sent_ids = [], []
+        sent_id, line_cnt = True, 0
+        tf.logging.info("Processing %s", input_path)
+        for line in tf.gfile.Open(input_path):
+          if line_cnt % 100000 == 0:
+            tf.logging.info("Loading line %d", line_cnt)
+          line_cnt += 1
+
+          if not line.strip():
+            if FLAGS.use_eod:
+              sent_id = not sent_id
+              cur_sent = [EOD_ID]
+            else:
+              continue
+          else:
+            if FLAGS.from_raw_text:
+              cur_sent = preprocess_text(line.strip(), lower=FLAGS.uncased)
+              cur_sent = encode_ids(sp, cur_sent)
+            else:
+              cur_sent = list(map(int, line.strip().split()))
+
+          input_data.extend(cur_sent)
+          sent_ids.extend([sent_id] * len(cur_sent))
           sent_id = not sent_id
-          cur_sent = [EOD_ID]
-        else:
+
+        tf.logging.info("Finish with line %d", line_cnt)
+        if line_cnt == 0:
           continue
-      else:
-        if FLAGS.from_raw_text:
-          cur_sent = preprocess_text(line.strip(), lower=FLAGS.uncased)
-          cur_sent = encode_ids(sp, cur_sent)
-        else:
-          cur_sent = list(map(int, line.strip().split()))
 
-      input_data.extend(cur_sent)
-      sent_ids.extend([sent_id] * len(cur_sent))
-      sent_id = not sent_id
+        input_data = np.array(input_data, dtype=np.int64)
+        sent_ids = np.array(sent_ids, dtype=np.bool)
 
-    tf.logging.info("Finish with line %d", line_cnt)
-    if line_cnt == 0:
-      continue
+        total_line_cnt += line_cnt
+        input_shards.append((input_data, sent_ids))
 
-    input_data = np.array(input_data, dtype=np.int64)
-    sent_ids = np.array(sent_ids, dtype=np.bool)
+    tf.logging.info("[Task %d] Total number line: %d", idx, total_line_cnt)
 
-    total_line_cnt += line_cnt
-    input_shards.append((input_data, sent_ids))
+    tfrecord_dir = os.path.join(FLAGS.save_dir, "tfrecords")
 
-  tf.logging.info("[Task %d] Total number line: %d", idx, total_line_cnt)
+    filenames, num_batch = [], 0
 
-  tfrecord_dir = os.path.join(FLAGS.save_dir, "tfrecords")
+    # Randomly shuffle input shards (with a fixed but distinct random seed)
+    np.random.seed(100 * FLAGS.task + FLAGS.pass_id)
 
-  filenames, num_batch = [], 0
+    perm_indices = np.random.permutation(len(input_shards))
+    tf.logging.info("Using perm indices %s for pass %d",
+                      perm_indices.tolist(), FLAGS.pass_id)
 
-  # Randomly shuffle input shards (with a fixed but distinct random seed)
-  np.random.seed(100 * FLAGS.task + FLAGS.pass_id)
+    input_data_list, sent_ids_list = [], []
+    prev_sent_id = None
+    for perm_idx in perm_indices:
+        input_data, sent_ids = input_shards[perm_idx]
+        # make sure the `send_ids[0] == not prev_sent_id`
+        if prev_sent_id is not None and sent_ids[0] == prev_sent_id:
+          sent_ids = np.logical_not(sent_ids)
 
-  perm_indices = np.random.permutation(len(input_shards))
-  tf.logging.info("Using perm indices %s for pass %d",
-                  perm_indices.tolist(), FLAGS.pass_id)
+        # append to temporary list
+        input_data_list.append(input_data)
+        sent_ids_list.append(sent_ids)
 
-  input_data_list, sent_ids_list = [], []
-  prev_sent_id = None
-  for perm_idx in perm_indices:
-    input_data, sent_ids = input_shards[perm_idx]
-    # make sure the `send_ids[0] == not prev_sent_id`
-    if prev_sent_id is not None and sent_ids[0] == prev_sent_id:
-      sent_ids = np.logical_not(sent_ids)
+        # update `prev_sent_id`
+        prev_sent_id = sent_ids[-1]
 
-    # append to temporary list
-    input_data_list.append(input_data)
-    sent_ids_list.append(sent_ids)
+    input_data = np.concatenate(input_data_list)
+    sent_ids = np.concatenate(sent_ids_list)
 
-    # update `prev_sent_id`
-    prev_sent_id = sent_ids[-1]
+    file_name, cur_num_batch = create_tfrecords(
+          save_dir=tfrecord_dir,
+          basename="{}-{}-{}".format(FLAGS.split, idx, FLAGS.pass_id),
+          data=[input_data, sent_ids],
+          bsz_per_host=FLAGS.bsz_per_host,
+          seq_len=FLAGS.seq_len,
+          bi_data=FLAGS.bi_data,
+          sp=sp,
+      )
 
-  input_data = np.concatenate(input_data_list)
-  sent_ids = np.concatenate(sent_ids_list)
+    filenames.append(file_name)
+    num_batch += cur_num_batch
 
-  file_name, cur_num_batch = create_tfrecords(
-      save_dir=tfrecord_dir,
-      basename="{}-{}-{}".format(FLAGS.split, idx, FLAGS.pass_id),
-      data=[input_data, sent_ids],
-      bsz_per_host=FLAGS.bsz_per_host,
-      seq_len=FLAGS.seq_len,
-      bi_data=FLAGS.bi_data,
-      sp=sp,
-  )
+    record_info = {
+          "filenames": filenames,
+          "num_batch": num_batch
+      }
 
-  filenames.append(file_name)
-  num_batch += cur_num_batch
-
-  record_info = {
-      "filenames": filenames,
-      "num_batch": num_batch
-  }
-
-  return record_info
+    return record_info
 
 
 def create_data(_):
@@ -378,10 +389,10 @@ def _sample_mask(sp, seg, reverse=False, max_gram=5, goal_num_predict=None):
     end = beg + 1
     cnt_ngram = 1
     while end < seg_len:
-      if _is_start_piece(sp.IdToPiece(seg[beg].item())):
-        cnt_ngram += 1
-        if cnt_ngram > n:
-          break
+      # if _is_start_piece(sp.IdToPiece(seg[beg].item())):
+      #   cnt_ngram += 1
+      #   if cnt_ngram > n:
+      #     break
       end += 1
     if end >= seg_len:
       break
@@ -406,135 +417,146 @@ def _sample_mask(sp, seg, reverse=False, max_gram=5, goal_num_predict=None):
 
 def create_tfrecords(save_dir, basename, data, bsz_per_host, seq_len,
                      bi_data, sp):
-  data, sent_ids = data[0], data[1]
+    '''
+    将整个语料库（一个很长的data和对应的sent_ids）分成batch，
+    :param save_dir:
+    :param basename:
+    :param data:
+    :param bsz_per_host:
+    :param seq_len:
+    :param bi_data:
+    :param sp:
+    :return:
+    '''
+    data, sent_ids = data[0], data[1]
 
-  num_core = FLAGS.num_core_per_host
-  bsz_per_core = bsz_per_host // num_core
+    num_core = FLAGS.num_core_per_host
+    bsz_per_core = bsz_per_host // num_core
 
-  if bi_data:
-    assert bsz_per_host % (2 * FLAGS.num_core_per_host) == 0
-    fwd_data, fwd_sent_ids = batchify(data, bsz_per_host // 2, sent_ids)
+    if bi_data:
+        assert bsz_per_host % (2 * FLAGS.num_core_per_host) == 0
+        fwd_data, fwd_sent_ids = batchify(data, bsz_per_host // 2, sent_ids)
 
-    fwd_data = fwd_data.reshape(num_core, 1, bsz_per_core // 2, -1)
-    fwd_sent_ids = fwd_sent_ids.reshape(num_core, 1, bsz_per_core // 2, -1)
+        fwd_data = fwd_data.reshape(num_core, 1, bsz_per_core // 2, -1)
+        fwd_sent_ids = fwd_sent_ids.reshape(num_core, 1, bsz_per_core // 2, -1)
 
-    bwd_data = fwd_data[:, :, :, ::-1]
-    bwd_sent_ids = fwd_sent_ids[:, :, :, ::-1]
+        bwd_data = fwd_data[:, :, :, ::-1]
+        bwd_sent_ids = fwd_sent_ids[:, :, :, ::-1]
 
-    data = np.concatenate(
-        [fwd_data, bwd_data], 1).reshape(bsz_per_host, -1)
-    sent_ids = np.concatenate(
-        [fwd_sent_ids, bwd_sent_ids], 1).reshape(bsz_per_host, -1)
-  else:
-    data, sent_ids = batchify(data, bsz_per_host, sent_ids)
-
-  tf.logging.info("Raw data shape %s.", data.shape)
-
-  file_name = format_filename(
-      prefix=basename,
-      bsz_per_host=bsz_per_host,      # 每个host的batch大小
-      seq_len=seq_len,
-      bi_data=bi_data,                # 是否双向batch
-      suffix="tfrecords",
-      mask_alpha=FLAGS.mask_alpha,
-      mask_beta=FLAGS.mask_beta,
-      reuse_len=FLAGS.reuse_len,
-      uncased=FLAGS.uncased,
-      fixed_num_predict=FLAGS.num_predict
-  )
-  save_path = os.path.join(save_dir, file_name)
-  record_writer = tf.python_io.TFRecordWriter(save_path)
-  tf.logging.info("Start writing %s.", save_path)
-
-  num_batch = 0
-  reuse_len = FLAGS.reuse_len
-
-  # [sep] x 2 + [cls]
-  assert reuse_len < seq_len - 3
-
-  data_len = data.shape[1]
-  sep_array = np.array([SEP_ID], dtype=np.int64)
-  cls_array = np.array([CLS_ID], dtype=np.int64)
-
-  i = 0
-  while i + seq_len <= data_len:
-    if num_batch % 500 == 0:
-      tf.logging.info("Processing batch %d", num_batch)
-
-    all_ok = True
-    features = []
-    for idx in range(bsz_per_host):
-      inp = data[idx, i: i + reuse_len]
-      tgt = data[idx, i + 1: i + reuse_len + 1]
-
-      results = _split_a_and_b(
-          data[idx],
-          sent_ids[idx],
-          begin_idx=i + reuse_len,
-          tot_len=seq_len - reuse_len - 3,
-          extend_target=True)
-      if results is None:
-        tf.logging.info("Break out with seq idx %d", i)
-        all_ok = False
-        break
-
-      # unpack the results
-      (a_data, b_data, label, _, a_target, b_target) = tuple(results)
-
-      # sample ngram spans to predict
-      reverse = bi_data and (idx // (bsz_per_core // 2)) % 2 == 1
-      if FLAGS.num_predict is None:
-        num_predict_0 = num_predict_1 = None
-      else:
-        num_predict_1 = FLAGS.num_predict // 2
-        num_predict_0 = FLAGS.num_predict - num_predict_1
-      mask_0 = _sample_mask(sp, inp, reverse=reverse,
-                            goal_num_predict=num_predict_0)
-      mask_1 = _sample_mask(sp, np.concatenate([a_data, sep_array, b_data,
-                                                sep_array, cls_array]),
-                            reverse=reverse, goal_num_predict=num_predict_1)
-
-      # concatenate data
-      cat_data = np.concatenate([inp, a_data, sep_array, b_data,
-                                 sep_array, cls_array])
-      seg_id = ([0] * (reuse_len + a_data.shape[0]) + [0] +
-                [1] * b_data.shape[0] + [1] + [2])
-      assert cat_data.shape[0] == seq_len
-      assert mask_0.shape[0] == seq_len // 2
-      assert mask_1.shape[0] == seq_len // 2
-
-      # the last two CLS's are not used, just for padding purposes
-      tgt = np.concatenate([tgt, a_target, b_target, cls_array, cls_array])
-      assert tgt.shape[0] == seq_len
-
-      is_masked = np.concatenate([mask_0, mask_1], 0)
-      if FLAGS.num_predict is not None:
-        assert np.sum(is_masked) == FLAGS.num_predict
-
-      feature = {
-          "input": _int64_feature(cat_data),
-          "is_masked": _int64_feature(is_masked),
-          "target": _int64_feature(tgt),
-          "seg_id": _int64_feature(seg_id),
-          "label": _int64_feature([label]),
-      }
-      features.append(feature)
-
-    if all_ok:
-      assert len(features) == bsz_per_host
-      for feature in features:
-        example = tf.train.Example(features=tf.train.Features(feature=feature))
-        record_writer.write(example.SerializeToString())
-      num_batch += 1
+        data = np.concatenate(
+            [fwd_data, bwd_data], 1).reshape(bsz_per_host, -1)
+        sent_ids = np.concatenate(
+            [fwd_sent_ids, bwd_sent_ids], 1).reshape(bsz_per_host, -1)
     else:
-      break
+        data, sent_ids = batchify(data, bsz_per_host, sent_ids)
+
+    tf.logging.info("Raw data shape %s.", data.shape)
+
+    file_name = format_filename(
+          prefix=basename,
+          bsz_per_host=bsz_per_host,      # 每个host的batch大小
+          seq_len=seq_len,
+          bi_data=bi_data,                # 是否双向batch
+          suffix="tfrecords",
+          mask_alpha=FLAGS.mask_alpha,
+          mask_beta=FLAGS.mask_beta,
+          reuse_len=FLAGS.reuse_len,
+          uncased=FLAGS.uncased,
+          fixed_num_predict=FLAGS.num_predict
+      )
+    save_path = os.path.join(save_dir, file_name)
+    record_writer = tf.python_io.TFRecordWriter(save_path)
+    tf.logging.info("Start writing %s.", save_path)
+
+    num_batch = 0
+    reuse_len = FLAGS.reuse_len
+
+    # [sep] x 2 + [cls]
+    assert reuse_len < seq_len - 3
+
+    data_len = data.shape[1]
+    sep_array = np.array([SEP_ID], dtype=np.int64)
+    cls_array = np.array([CLS_ID], dtype=np.int64)
+
+    i = 0
+    while i + seq_len <= data_len:
+        if num_batch % 500 == 0:
+          tf.logging.info("Processing batch %d", num_batch)
+
+        all_ok = True
+        features = []
+        for idx in range(bsz_per_host):
+          inp = data[idx, i: i + reuse_len]
+          tgt = data[idx, i + 1: i + reuse_len + 1]
+
+          results = _split_a_and_b(
+              data[idx],
+              sent_ids[idx],
+              begin_idx=i + reuse_len,
+              tot_len=seq_len - reuse_len - 3,
+              extend_target=True)
+          if results is None:
+            tf.logging.info("Break out with seq idx %d", i)
+            all_ok = False
+            break
+
+          # unpack the results
+          (a_data, b_data, label, _, a_target, b_target) = tuple(results)
+
+          # sample ngram spans to predict
+          reverse = bi_data and (idx // (bsz_per_core // 2)) % 2 == 1
+          if FLAGS.num_predict is None:
+            num_predict_0 = num_predict_1 = None
+          else:
+            num_predict_1 = FLAGS.num_predict // 2
+            num_predict_0 = FLAGS.num_predict - num_predict_1
+          mask_0 = _sample_mask(sp, inp, reverse=reverse,
+                                goal_num_predict=num_predict_0)
+          mask_1 = _sample_mask(sp, np.concatenate([a_data, sep_array, b_data,
+                                                    sep_array, cls_array]),
+                                reverse=reverse, goal_num_predict=num_predict_1)
+
+          # concatenate data
+          cat_data = np.concatenate([inp, a_data, sep_array, b_data,
+                                     sep_array, cls_array])
+          seg_id = ([0] * (reuse_len + a_data.shape[0]) + [0] +
+                    [1] * b_data.shape[0] + [1] + [2])
+          assert cat_data.shape[0] == seq_len
+          assert mask_0.shape[0] == seq_len // 2
+          assert mask_1.shape[0] == seq_len // 2
+
+          # the last two CLS's are not used, just for padding purposes
+          tgt = np.concatenate([tgt, a_target, b_target, cls_array, cls_array])
+          assert tgt.shape[0] == seq_len
+
+          is_masked = np.concatenate([mask_0, mask_1], 0)
+          if FLAGS.num_predict is not None:
+            assert np.sum(is_masked) == FLAGS.num_predict
+
+          feature = {
+              "input": _int64_feature(cat_data),
+              "is_masked": _int64_feature(is_masked),
+              "target": _int64_feature(tgt),
+              "seg_id": _int64_feature(seg_id),
+              "label": _int64_feature([label]),
+          }
+          features.append(feature)
+
+        if all_ok:
+          assert len(features) == bsz_per_host
+          for feature in features:
+            example = tf.train.Example(features=tf.train.Features(feature=feature))
+            record_writer.write(example.SerializeToString())
+          num_batch += 1
+        else:
+          break
 
     i += reuse_len
 
-  record_writer.close()
-  tf.logging.info("Done writing %s. Num of batches: %d", save_path, num_batch)
+    record_writer.close()
+    tf.logging.info("Done writing %s. Num of batches: %d", save_path, num_batch)
 
-  return save_path, num_batch
+    return save_path, num_batch
 
 
 ################
@@ -886,7 +908,7 @@ def get_input_fn(
 
 if __name__ == "__main__":
   FLAGS = flags.FLAGS
-  flags.DEFINE_bool("use_tpu", True, help="whether to use TPUs")
+  flags.DEFINE_bool("use_tpu", False, help="whether to use TPUs")
   flags.DEFINE_integer("bsz_per_host", 32, help="batch size per host.")
   flags.DEFINE_integer("num_core_per_host", 8, help="num TPU cores per host.")
 
@@ -922,6 +944,10 @@ if __name__ == "__main__":
   flags.DEFINE_integer("num_task", 1, help="Number of total tasks.")
   flags.DEFINE_integer("task", 0, help="The Task ID. This value is used when "
                        "using multiple workers to identify each worker.")
+
+  # 自己添加的词表
+  flags.DEFINE_string("vocab_file", "vocab.txt", help="Input file")
+
 
   tf.logging.set_verbosity(tf.logging.INFO)
   tf.app.run(create_data)

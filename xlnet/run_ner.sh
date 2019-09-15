@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 for i in "$@"
   do
     case $i in
@@ -75,7 +76,7 @@ echo "train steps    = ${TRAINSTEPS}"
 echo "warmup steps   = ${WARMUPSTEPS}"
 echo "save steps     = ${SAVESTEPS}"
 
-alias python=python3
+# alias python=python3
 
 start_time=`date +%s`
 
@@ -135,7 +136,7 @@ CUDA_VISIBLE_DEVICES=${GPUDEVICE} python run_ner.py \
 --do_export=false \
 --overwrite_data=false
 
-python tool/convert_token.py \
+python utils/convert_token.py \
 --input_file=${OUTPUTDIR}/data/predict.${PREDICTTAG}.json \
 --output_file=${OUTPUTDIR}/data/predict.${PREDICTTAG}.txt
 

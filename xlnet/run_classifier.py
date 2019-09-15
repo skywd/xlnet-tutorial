@@ -89,7 +89,7 @@ flags.DEFINE_integer("iterations", default=1000,
       help="number of iterations per TPU training loop.")
 
 # training
-flags.DEFINE_bool("do_train", default=False, help="whether to do training")
+flags.DEFINE_bool("do_train", default=True, help="whether to do training")
 flags.DEFINE_integer("train_steps", default=1000,
       help="Number of training steps")
 flags.DEFINE_integer("warmup_steps", default=0, help="number of warmup steps")

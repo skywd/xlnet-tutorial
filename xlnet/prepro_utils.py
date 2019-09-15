@@ -23,13 +23,6 @@ def printable_text(text):
       return text.decode("utf-8", "ignore")
     else:
       raise ValueError("Unsupported string type: %s" % (type(text)))
-  elif six.PY2:
-    if isinstance(text, str):
-      return text
-    elif isinstance(text, unicode):
-      return text.encode("utf-8")
-    else:
-      raise ValueError("Unsupported string type: %s" % (type(text)))
   else:
     raise ValueError("Not running on Python2 or Python 3?")
 
@@ -53,8 +46,6 @@ def preprocess_text(inputs, lower=False, remove_space=True, keep_accents=False):
     outputs = inputs
   outputs = outputs.replace("``", '"').replace("''", '"')
 
-  if six.PY2 and isinstance(outputs, str):
-    outputs = outputs.decode('utf-8')
 
   if not keep_accents:
     outputs = unicodedata.normalize('NFKD', outputs)
@@ -67,10 +58,6 @@ def preprocess_text(inputs, lower=False, remove_space=True, keep_accents=False):
 
 def encode_pieces(sp_model, text, return_unicode=True, sample=False):
   # return_unicode is used only for py2
-
-  # note(zhiliny): in some systems, sentencepiece only accepts str for py2
-  if six.PY2 and isinstance(text, unicode):
-    text = text.encode('utf-8')
 
   if not sample:
     pieces = sp_model.EncodeAsPieces(text)
@@ -91,21 +78,21 @@ def encode_pieces(sp_model, text, return_unicode=True, sample=False):
     else:
       new_pieces.append(piece)
 
-  # note(zhiliny): convert back to unicode for py2
-  if six.PY2 and return_unicode:
-    ret_pieces = []
-    for piece in new_pieces:
-      if isinstance(piece, str):
-        piece = piece.decode('utf-8')
-      ret_pieces.append(piece)
-    new_pieces = ret_pieces
-
-  return new_pieces
-
 
 def encode_ids(sp_model, text, sample=False):
-  pieces = encode_pieces(sp_model, text, return_unicode=False, sample=sample)
-  ids = [sp_model.PieceToId(piece) for piece in pieces]
+  '''
+  在这里进行了修改
+  :param sp_model:
+  :param text:
+  :param sample:
+  :return:
+  '''
+  # pieces = encode_pieces(sp_model, text, return_unicode=False, sample=sample)
+  # ids = [sp_model.PieceToId(piece) for piece in pieces]
+
+  pieces = sp_model.tokenize(text)
+  ids = sp_model.convert_tokens_to_ids(pieces)
+
   return ids
 
 

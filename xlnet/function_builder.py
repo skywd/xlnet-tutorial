@@ -5,8 +5,11 @@ from __future__ import print_function
 
 import functools
 import os
+import sys
+sys.path.append('/xlnet')
+
 import tensorflow as tf
-from . import modeling
+import modeling
 import xlnet
 
 

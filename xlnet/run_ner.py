@@ -3,18 +3,22 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
-sys.path.append('xlnet') # walkaround due to submodule absolute import...
+sys.path.append('..') # walkaround due to submodule absolute import...
 
 import collections
 import os
+import sys
 import time
 import json
+sys.path.append("./xlnet")
+
 
 import tensorflow as tf
 import numpy as np
 import sentencepiece as sp
+import pathlib
 
-from xlnet import xlnet
+import xlnet
 import prepro_utils
 import model_utils
 
@@ -22,6 +26,10 @@ MIN_FLOAT = -1e30
 
 flags = tf.flags
 FLAGS = flags.FLAGS
+
+
+basedir = str(pathlib.Path(os.path.abspath(__file__)).parent.parent)
+print(basedir)
 
 flags.DEFINE_string("data_dir", None, "Data directory where raw data located.")
 flags.DEFINE_string("output_dir", None, "Output directory where processed data located.")
