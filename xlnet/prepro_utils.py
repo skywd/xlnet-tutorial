@@ -56,7 +56,7 @@ def preprocess_text(inputs, lower=False, remove_space=True, keep_accents=False):
   return outputs
 
 
-def encode_pieces(sp_model, text, return_unicode=True, sample=False):
+def encode_pieces(sp_model, text, sample=False):
   # return_unicode is used only for py2
 
   if not sample:
@@ -77,6 +77,7 @@ def encode_pieces(sp_model, text, return_unicode=True, sample=False):
       new_pieces.extend(cur_pieces)
     else:
       new_pieces.append(piece)
+  return new_pieces
 
 
 def encode_ids(sp_model, text, sample=False):
