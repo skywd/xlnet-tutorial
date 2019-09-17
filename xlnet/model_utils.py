@@ -93,7 +93,7 @@ def init_from_checkpoint(FLAGS, global_vars=False):
 
 
 def get_train_op(FLAGS, total_loss, grads_and_vars=None):
-  global_step = tf.train.get_or_create_global_step()
+  global_step = tf.compat.v1.train.get_or_create_global_step()
 
   # increase the learning rate linearly
   if FLAGS.warmup_steps > 0:
@@ -105,7 +105,7 @@ def get_train_op(FLAGS, total_loss, grads_and_vars=None):
 
   # decay the learning rate
   if FLAGS.decay_method == "poly":
-    decay_lr = tf.train.polynomial_decay(
+    decay_lr = tf.compat.v1.train.polynomial_decay(
         FLAGS.learning_rate,
         global_step=global_step - FLAGS.warmup_steps,
         decay_steps=FLAGS.train_steps - FLAGS.warmup_steps,
@@ -128,7 +128,7 @@ def get_train_op(FLAGS, total_loss, grads_and_vars=None):
                      "training so far.")
 
   if FLAGS.weight_decay == 0:
-    optimizer = tf.train.AdamOptimizer(
+    optimizer = tf.compat.v1.train.AdamOptimizer(
         learning_rate=learning_rate,
         epsilon=FLAGS.adam_epsilon)
   else:
