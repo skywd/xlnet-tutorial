@@ -28,7 +28,7 @@ cf = Config()    # 初始化超参数配置
 
 MIN_FLOAT = -1e30
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2，0, 1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -215,7 +215,7 @@ class XLNetExampleConverter(object):
     
     def convert_single_example(self, example, logging=False):
         '''
-        对单个样本进行分析
+        对单个样本进行分析, 然后将字转化为id，标签转化为id，然后结构化到InputFeature中
         :param example:
         :param logging:
         :return:
@@ -229,7 +229,7 @@ class XLNetExampleConverter(object):
         if isinstance(example, PaddingInputExample):
             return default_feature
         
-        token_items = self.tokenizer.tokenize(example.text)     # 这里值为空
+        token_items = self.tokenizer.tokenize(example.text)
         label_items = example.label.split(" ")
         
         if len(label_items) != len([token for token in token_items if token.startswith(prepro_utils.SPIECE_UNDERLINE)]):
@@ -339,10 +339,13 @@ class XLNetExampleConverter(object):
 
         return features
     
-    def file_based_convert_examples_to_features(self,
-                                                examples,
-                                                output_file):
-        """Convert a set of `InputExample`s to a TFRecord file."""
+    def file_based_convert_examples_to_features(self, examples, output_file):
+        '''
+        将数据转化为TF_Record 结构，作为模型数据输入
+        :param examples:
+        :param output_file: tf_record数据
+        :return:
+        '''
         def create_int_feature(values):
             return tf.train.Feature(int64_list=tf.train.Int64List(value=list(values)))
         
@@ -439,8 +442,7 @@ class XLNetInputBuilder(object):
 
             return example
         
-        def input_fn(params,
-                     input_context=None):
+        def input_fn(params, input_context=None):
             """The actual input function."""
             batch_size = params["batch_size"]
             
@@ -555,8 +557,7 @@ class XLNetModelBuilder(object):
         
         return loss, predict_ids
     
-    def get_model_fn(self,
-                     label_list):
+    def get_model_fn(self, label_list):
         """Returns `model_fn` closure for TPUEstimator."""
         def model_fn(features,
                      labels,
@@ -732,29 +733,67 @@ def main():
         max_seq_length=cf.max_seq_length,
         tokenizer=tokenizer)
     
-    if cf.do_train:
-        train_examples = processor.get_train_examples()
+    if cf.do_train and cf.do_eval:   # 开始训练
+
+        train_file = os.path.join(cf.output_dir, "train.tf_record")
+        tf.logging.info("Use tfrecord samples: {}".format(len(train_file)))
+
+        train_examples = processor.get_train_examples()    # train data
+        np.random.shuffle(train_examples)
+
+        example_converter.file_based_convert_examples_to_features(train_examples, train_file)
+        train_steps = int(len(train_examples) * cf.num_train_epochs / cf.train_batch_size)
+        cf.warmup_steps = int(0.1 * train_steps)
+
         
         tf.logging.info("***** Run training *****")
         tf.logging.info("  Num examples = %d", len(train_examples))
         tf.logging.info("  Batch size = %d", cf.train_batch_size)
         tf.logging.info("  Num steps = %d", cf.train_steps)
+
         
-        train_features = example_converter.convert_examples_to_features(train_examples)
-        train_input_fn = XLNetInputBuilder.get_input_builder(train_features, cf.max_seq_length, True, True)
+        # train_features = example_converter.convert_examples_to_features(train_examples)
+
+        # if not os.path.exists(train_file):
+        #     train_features = example_converter.file_based_convert_examples_to_features(train_examples, train_file)
+
+
+        # 读取TF_record数据
+        # train_input_fn = XLNetInputBuilder.get_input_builder(train_features, cf.max_seq_length, True, True)
+        train_input_fn = XLNetInputBuilder.get_file_based_input_fn(
+                                    input_file= train_file,
+                                    seq_length=cf.max_seq_length,
+                                    is_training=True,
+                                    drop_remainder=True
+        )
         
-        estimator.train(input_fn=train_input_fn, max_steps=cf.train_steps)
-    
-    if cf.do_eval:
+        estimator.train(input_fn=train_input_fn, max_steps=train_steps)
+
         eval_examples = processor.get_dev_examples()
         
         tf.logging.info("***** Run evaluation *****")
         tf.logging.info("  Num examples = %d", len(eval_examples))
         tf.logging.info("  Batch size = %d", cf.eval_batch_size)
-        
+
+        # early stop hook
+        # early_stopping_hook = tf.contrib.estimator.stop_if_no_decrease_hook(
+        #                             estimator=estimator,
+        #                             metric_name='loss',
+        #                             max_steps_without_decrease=cf.num_train_steps,
+        #                             eval_dir=None,
+        #                             min_steps=0,
+        #                             run_every_secs=None,
+        #                             run_every_steps=cf.save_checkpoints_steps
+        # )
+
         eval_features = example_converter.convert_examples_to_features(eval_examples)
         eval_input_fn = XLNetInputBuilder.get_input_builder(eval_features, cf.max_seq_length, False, False)
-        
+
+        # train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=cf.num_train_steps,
+        #                                     hooks=[early_stopping_hook])
+        # eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn)
+        # tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
+
         result = estimator.evaluate(input_fn=eval_input_fn)
         
         precision = result["precision"]
@@ -796,9 +835,9 @@ def main():
     
     if cf.do_export:
         tf.logging.info("***** Running exporting *****")
-        tf.gfile.MakeDirs(cf.export_dir)
+        tf.io.gfile.makedirs(cf.export_dir)
         serving_input_fn = XLNetInputBuilder.get_serving_input_fn(cf.max_seq_length)
-        estimator.export_savedmodel(cf.export_dir, serving_input_fn, as_text=False)
+        estimator.export_saved_model(cf.export_dir, serving_input_fn, as_text=False)
 
 if __name__ == "__main__":
     main()
